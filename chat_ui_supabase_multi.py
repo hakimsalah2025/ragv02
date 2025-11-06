@@ -2,6 +2,16 @@
 """
 💬 واجهة الدردشة العربية – مشروع نبراس (نسخة Supabase متعددة المحادثات + استرجاع دلالي ومراجع)
 """
+import os
+import subprocess
+import sys
+
+# تثبيت psycopg2-binary إجباريًا في بيئة Streamlit Cloud
+try:
+    import psycopg2
+except ModuleNotFoundError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "psycopg2-binary"])
+    import psycopg2
 
 import streamlit as st
 import psycopg2
