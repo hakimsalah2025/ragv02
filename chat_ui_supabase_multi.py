@@ -1,25 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-💬 واجهة الدردشة العربية – مشروع نبراس (نسخة Supabase متعددة المحادثات + استرجاع دلالي ومراجع)
+💬 واجهة الدردشة العربية – مشروع نبراس (إصدار Streamlit Cloud باستخدام SQLAlchemy + pg8000)
 """
-import os
-import subprocess
-import sys
-
-# تثبيت psycopg2-binary إجباريًا في بيئة Streamlit Cloud
-try:
-    import psycopg2
-except ModuleNotFoundError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "psycopg2-binary"])
-    import psycopg2
 
 import streamlit as st
-import psycopg2
 import os
 import json
 import math
 import requests
 import textwrap
+from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
 # ==================== الإعداد ====================
@@ -40,7 +30,11 @@ MIN_ACCEPT = 0.8
 
 # ==================== أدوات عامة ====================
 def connect_db():
-    return psycopg2.connect(**DB)
+    """إنشاء اتصال بقاعدة البيانات عبر SQLAlchemy + pg8000"""
+    db_url = f"postgresql+pg8000://{DB['user']}:{DB['password']}@{DB['host']}:{DB['port']}/{DB['dbname']}"
+    engine = create_engine(db_url)
+    conn = engine.connect()
+    return conn
 
 def cosine(a, b):
     if not a or not b or len(a) != len(b):
@@ -60,10 +54,9 @@ def embed_text(text):
 def search_chunks(query):
     """البحث في قاعدة البيانات عن المقاطع ذات الصلة"""
     conn = connect_db()
-    cur = conn.cursor()
-    cur.execute("SELECT book_name, content, start_line, end_line, embedding_vector FROM chunk;")
-    rows = cur.fetchall()
-    cur.close(); conn.close()
+    result = conn.execute(text("SELECT book_name, content, start_line, end_line, embedding_vector FROM chunk;"))
+    rows = result.fetchall()
+    conn.close()
 
     q_vec = embed_text(query)
     results = []
@@ -83,50 +76,48 @@ def search_chunks(query):
 # ==================== قواعد البيانات: المحادثات ====================
 def fetch_conversations():
     conn = connect_db()
-    cur = conn.cursor()
-    cur.execute("SELECT id, title FROM conversation ORDER BY id DESC;")
-    rows = cur.fetchall()
-    cur.close(); conn.close()
+    result = conn.execute(text("SELECT id, title FROM conversation ORDER BY id DESC;"))
+    rows = result.fetchall()
+    conn.close()
     return [{"id": r[0], "title": r[1]} for r in rows]
 
 def create_conversation(title="محادثة جديدة"):
     conn = connect_db()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO conversation (title) VALUES (%s) RETURNING id;", (title,))
-    cid = cur.fetchone()[0]
-    conn.commit(); cur.close(); conn.close()
+    result = conn.execute(text("INSERT INTO conversation (title) VALUES (:t) RETURNING id;"), {"t": title})
+    cid = result.fetchone()[0]
+    conn.commit()
+    conn.close()
     return cid
 
 def delete_conversation(conv_id):
-    """🗑️ حذف محادثة وكل رسائلها"""
     conn = connect_db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM message WHERE conversation_id = %s;", (conv_id,))
-    cur.execute("DELETE FROM conversation WHERE id = %s;", (conv_id,))
-    conn.commit(); cur.close(); conn.close()
+    conn.execute(text("DELETE FROM message WHERE conversation_id = :c;"), {"c": conv_id})
+    conn.execute(text("DELETE FROM conversation WHERE id = :c;"), {"c": conv_id})
+    conn.commit()
+    conn.close()
     st.rerun()
 
 def fetch_messages(conv_id):
     conn = connect_db()
-    cur = conn.cursor()
-    cur.execute("SELECT role, content FROM message WHERE conversation_id = %s ORDER BY id ASC;", (conv_id,))
-    rows = cur.fetchall()
-    cur.close(); conn.close()
+    result = conn.execute(text("SELECT role, content FROM message WHERE conversation_id = :c ORDER BY id ASC;"),
+                          {"c": conv_id})
+    rows = result.fetchall()
+    conn.close()
     return [{"role": r[0], "content": r[1]} for r in rows]
 
 def save_message(conv_id, role, content):
     conn = connect_db()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO message (conversation_id, role, content) VALUES (%s, %s, %s);",
-                (conv_id, role, content))
-    conn.commit(); cur.close(); conn.close()
+    conn.execute(text("INSERT INTO message (conversation_id, role, content) VALUES (:c, :r, :m);"),
+                 {"c": conv_id, "r": role, "m": content})
+    conn.commit()
+    conn.close()
 
 def update_conversation_title(conv_id, new_title):
-    """تحديث عنوان المحادثة"""
     conn = connect_db()
-    cur = conn.cursor()
-    cur.execute("UPDATE conversation SET title = %s WHERE id = %s;", (new_title, conv_id))
-    conn.commit(); cur.close(); conn.close()
+    conn.execute(text("UPDATE conversation SET title = :t WHERE id = :i;"),
+                 {"t": new_title, "i": conv_id})
+    conn.commit()
+    conn.close()
 
 # ==================== واجهة Streamlit ====================
 st.set_page_config(page_title="💬 نبراس Chat", layout="wide")
@@ -142,7 +133,7 @@ if st.sidebar.button("➕ محادثة جديدة"):
     st.session_state["messages"] = []
     st.rerun()
 
-# عرض قائمة المحادثات مع زر الحذف 🗑️
+# عرض قائمة المحادثات مع زر الحذف
 for c in convs:
     col1, col2 = st.sidebar.columns([4, 1])
     with col1:
@@ -184,13 +175,12 @@ if prompt:
     save_message(conv_id, "user", prompt)
     st.session_state["messages"].append({"role": "user", "content": prompt})
 
-    # 🔹 تحديث اسم المحادثة من أول سؤال فقط
+    # تحديث اسم المحادثة من أول سؤال فقط
     conn = connect_db()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM message WHERE conversation_id = %s;", (conv_id,))
-    count = cur.fetchone()[0]
-    cur.close(); conn.close()
-    if count == 1:  # أول رسالة
+    result = conn.execute(text("SELECT COUNT(*) FROM message WHERE conversation_id = :c;"), {"c": conv_id})
+    count = result.scalar()
+    conn.close()
+    if count == 1:
         title = textwrap.shorten(prompt.strip().replace("\n", " "), width=40, placeholder="…")
         update_conversation_title(conv_id, title)
 
@@ -198,7 +188,6 @@ if prompt:
     ranked = search_chunks(prompt)
 
     if ranked:
-        # 1️⃣ نصوص المقاطع الفعلية لتغذية النموذج
         context_blocks = []
         for i, r in enumerate(ranked, 1):
             context_blocks.append(
@@ -206,7 +195,6 @@ if prompt:
             )
         context = "\n".join(context_blocks)
 
-        # 2️⃣ تلخيص المراجع لعرضها بعد الإجابة
         refs_text = []
         for i, r in enumerate(ranked, 1):
             excerpt = " ".join(r["content"].split()[:25]) + "..."
@@ -219,15 +207,13 @@ if prompt:
         context = "❌ لم يتم العثور على مقاطع مرتبطة كفاية."
         refs_summary = ""
 
-    # 🔹 توليد الإجابة
+    # توليد الإجابة
     from llm_client import generate_answer
     response = generate_answer(prompt, context)
 
-    # 🔹 إلحاق المراجع بالرد
     if refs_summary:
         response += "\n\n---\n\n📖 **المراجع المستعملة:**\n" + refs_summary
 
-    # عرض الرد
     st.chat_message("assistant", avatar="🤖").markdown(response)
     save_message(conv_id, "assistant", response)
     st.session_state["messages"].append({"role": "assistant", "content": response})
