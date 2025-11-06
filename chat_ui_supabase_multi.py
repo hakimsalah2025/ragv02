@@ -45,11 +45,24 @@ def cosine(a, b):
     return 0.0 if (na == 0 or nb == 0) else dot / (na * nb)
 
 def embed_text(text):
-    """توليد تضمين عبر LM Studio"""
-    r = requests.post(f"{LM_STUDIO_BASE}/embeddings",
-                      json={"model": EMBED_MODEL, "input": text})
-    r.raise_for_status()
-    return r.json()["data"][0]["embedding"]
+    """توليد تضمين (Embeddings)
+    - محليًا: عبر LM Studio
+    - على السحابة: عبر OpenAI API
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        # إذا كنا على السحابة نستخدم OpenAI مباشرة
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        res = client.embeddings.create(model="text-embedding-3-large", input=text)
+        return res.data[0].embedding
+    else:
+        # محليًا نستعمل LM Studio
+        r = requests.post(f"{LM_STUDIO_BASE}/embeddings",
+                          json={"model": EMBED_MODEL, "input": text})
+        r.raise_for_status()
+        return r.json()["data"][0]["embedding"]
+
 
 def search_chunks(query):
     """البحث في قاعدة البيانات عن المقاطع ذات الصلة"""
